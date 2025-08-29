@@ -2,7 +2,7 @@ use std::io::{stdout, Write};
 use std::time::Duration;
 
 use anyhow::{Result, Context};
-use chrono::{Utc, Datelike};
+use chrono::{Utc, Datelike, NaiveDate};
 use clap::Parser;
 use colored::*;
 use crossterm::{
@@ -365,7 +365,44 @@ fn display_contribution_graph(stats: &Stats) {
     }
     
     println!();
-    println!("{} contributions in the last year", stats.contribution_graph.total_contributions.to_string().bright_green());
+    
+    // Calculate additional stats
+    let today = Utc::now().date_naive();
+    let this_week_start = today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64);
+    let this_month_start = today.with_day(1).unwrap();
+    let this_year_start = today.with_ordinal(1).unwrap();
+    
+    let mut today_contributions = 0;
+    let mut this_week_contributions = 0;
+    let mut this_month_contributions = 0;
+    let mut this_year_contributions = 0;
+    
+    for week in &stats.contribution_graph.weeks {
+        for day in &week.days {
+            if let Ok(day_date) = NaiveDate::parse_from_str(&day.date, "%Y-%m-%d") {
+                if day_date == today {
+                    today_contributions = day.count;
+                }
+                if day_date >= this_week_start {
+                    this_week_contributions += day.count;
+                }
+                if day_date >= this_month_start {
+                    this_month_contributions += day.count;
+                }
+                if day_date >= this_year_start {
+                    this_year_contributions += day.count;
+                }
+            }
+        }
+    }
+    
+    // Single line with all stats
+    println!("Today: {} | This week: {} | This month: {} | This year: {}", 
+        today_contributions.to_string().bright_green(),
+        this_week_contributions.to_string().bright_green(),
+        this_month_contributions.to_string().bright_green(),
+        this_year_contributions.to_string().bright_green()
+    );
     
     // Legend
     println!();
@@ -377,6 +414,7 @@ fn display_contribution_graph(stats: &Stats) {
     print!("{} ", "🟥".bright_red());
     println!("More");
 }
+
 
 #[tokio::main]
 async fn main() -> Result<()> {
