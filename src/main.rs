@@ -369,11 +369,14 @@ fn display_contribution_graph(stats: &Stats) {
     // Calculate additional stats
     let today = Utc::now().date_naive();
     let this_week_start = today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64);
+    let last_week_start = this_week_start - chrono::Duration::days(7);
+    let last_week_end = this_week_start - chrono::Duration::days(1);
     let this_month_start = today.with_day(1).unwrap();
     let this_year_start = today.with_ordinal(1).unwrap();
     
     let mut today_contributions = 0;
     let mut this_week_contributions = 0;
+    let mut last_week_contributions = 0;
     let mut this_month_contributions = 0;
     let mut this_year_contributions = 0;
     
@@ -386,6 +389,9 @@ fn display_contribution_graph(stats: &Stats) {
                 if day_date >= this_week_start {
                     this_week_contributions += day.count;
                 }
+                if day_date >= last_week_start && day_date <= last_week_end {
+                    last_week_contributions += day.count;
+                }
                 if day_date >= this_month_start {
                     this_month_contributions += day.count;
                 }
@@ -396,10 +402,21 @@ fn display_contribution_graph(stats: &Stats) {
         }
     }
     
-    // Single line with all stats
-    println!("Today: {} | This week: {} | This month: {} | This year: {}", 
+    // Week comparison
+    let week_diff = this_week_contributions as i32 - last_week_contributions as i32;
+    let comparison = if week_diff > 0 {
+        format!(" ({} more than last week)", week_diff.to_string().bright_green())
+    } else if week_diff < 0 {
+        format!(" ({} less than last week)", (-week_diff).to_string().bright_red())
+    } else {
+        " (same as last week)".to_string()
+    };
+    
+    // Single line with all stats and comparison
+    println!("Today: {} | This week: {}{} | This month: {} | This year: {}", 
         today_contributions.to_string().bright_green(),
         this_week_contributions.to_string().bright_green(),
+        comparison,
         this_month_contributions.to_string().bright_green(),
         this_year_contributions.to_string().bright_green()
     );
@@ -413,7 +430,9 @@ fn display_contribution_graph(stats: &Stats) {
     print!("{} ", "🟧".bright_yellow());
     print!("{} ", "🟥".bright_red());
     println!("More");
+    
 }
+
 
 
 #[tokio::main]
