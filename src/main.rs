@@ -6,7 +6,7 @@ use chrono::{Utc, Datelike};
 use clap::Parser;
 use colored::*;
 use crossterm::{
-    event::{self, Event as CrosstermEvent, KeyCode, KeyEventKind},
+    event::{self, Event as CrosstermEvent, KeyCode, KeyEventKind, KeyModifiers},
     terminal,
 };
 use serde::{Deserialize, Serialize};
@@ -437,6 +437,9 @@ async fn main() -> Result<()> {
                                 if key_event.kind == KeyEventKind::Press {
                                     match key_event.code {
                                         KeyCode::Char('q') | KeyCode::Char('Q') => {
+                                            break;
+                                        }
+                                        KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
                                             break;
                                         }
                                         KeyCode::Esc => {
