@@ -410,9 +410,9 @@ async fn main() -> Result<()> {
     // Fetch stats
     let stats_result = client.get_stats().await;
     
-    // Stop loading animation and clear loading display
+    // Stop loading animation and clear screen
     loading_handle.abort();
-    print!("\r\x1b[10A\x1b[J"); // Move up 10 lines and clear from cursor to end of screen
+    print!("\x1b[2J\x1b[1;1H"); // Clear entire screen and move cursor to top-left
     stdout().flush().unwrap();
 
     match stats_result {
