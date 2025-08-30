@@ -367,7 +367,7 @@ fn display_contribution_graph(stats: &Stats) {
     println!();
     
     // Calculate additional stats
-    let today = Utc::now().date_naive();
+    let today = chrono::Local::now().date_naive();
     let this_week_start = today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64);
     let last_week_start = this_week_start - chrono::Duration::days(7);
     let last_week_end = this_week_start - chrono::Duration::days(1);
