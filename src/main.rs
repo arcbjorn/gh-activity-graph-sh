@@ -2,7 +2,7 @@ use std::io::{stdout, Write};
 use std::time::Duration;
 
 use anyhow::{Result, Context};
-use chrono::{Utc, Datelike, NaiveDate};
+use chrono::{Utc, Datelike, NaiveDate, TimeZone};
 use clap::Parser;
 use colored::*;
 use crossterm::{
@@ -53,6 +53,7 @@ struct GraphQLData {
 struct GraphQLUser {
     #[serde(rename = "contributionsCollection")]
     contributions_collection: ContributionsCollection,
+    repositories: RepositoryConnection,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,6 +88,35 @@ struct GraphQLDay {
 struct Stats {
     username: String,
     contribution_graph: ContributionGraph,
+    recent_repos: Vec<RepositoryWithCommits>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepositoryConnection {
+    nodes: Vec<Repository>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Repository {
+    name: String,
+    #[serde(rename = "pushedAt")]
+    pushed_at: String,
+    owner: RepositoryOwner,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct RepositoryOwner {
+    login: String,
+}
+
+#[derive(Debug, Serialize)]
+struct RepositoryWithCommits {
+    name: String,
+    full_name: String,
+    pushed_at: String,
+    today_commits: u32,
+    week_commits: u32,
+    month_commits: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -179,8 +209,8 @@ impl GitHubClient {
     }
 
     
-    async fn get_contribution_graph_from_graphql(&self) -> Result<ContributionGraph> {
-        let query = r#"
+    async fn get_data_from_graphql(&self) -> Result<(ContributionGraph, Vec<RepositoryWithCommits>)> {
+        let query = r#" 
         query($username: String!) {
             user(login: $username) {
                 contributionsCollection {
@@ -192,6 +222,19 @@ impl GitHubClient {
                                 contributionCount
                                 contributionLevel
                             }
+                        }
+                    }
+                }
+                repositories(
+                    first: 5
+                    orderBy: {field: PUSHED_AT, direction: DESC}
+                    ownerAffiliations: [OWNER, COLLABORATOR]
+                ) {
+                    nodes {
+                        name
+                        pushedAt
+                        owner {
+                            login
                         }
                     }
                 }
@@ -219,7 +262,8 @@ impl GitHubClient {
         }
         
         let graphql_response: GraphQLResponse = response.json().await?;
-        let calendar = graphql_response.data.user.contributions_collection.contribution_calendar;
+        let user_data = graphql_response.data.user;
+        let calendar = user_data.contributions_collection.contribution_calendar;
         
         // Convert GraphQL data to our format
         let mut weeks = Vec::new();
@@ -247,20 +291,135 @@ impl GitHubClient {
             weeks.push(week);
         }
         
-        Ok(ContributionGraph {
+        let contribution_graph = ContributionGraph {
             weeks,
             total_contributions: calendar.total_contributions,
-        })
+        };
+
+        // Get commit counts for each repository (single API call per repo)
+        let mut repos_with_commits = Vec::new();
+        for repo in user_data.repositories.nodes {
+            let full_name = format!("{}/{}", repo.owner.login, repo.name);
+            let (today_commits, week_commits, month_commits) = self.get_all_commit_counts(&full_name).await.unwrap_or((0, 0, 0));
+            repos_with_commits.push(RepositoryWithCommits {
+                name: repo.name,
+                full_name: full_name.clone(),
+                pushed_at: repo.pushed_at,
+                today_commits,
+                week_commits,
+                month_commits,
+            });
+        }
+
+        Ok((contribution_graph, repos_with_commits))
+    }
+
+    /// Get commit counts for today, this week, and this month for a repository
+    /// Uses the same time period calculations as the main stats to ensure consistency
+    async fn get_all_commit_counts(&self, full_repo_name: &str) -> Result<(u32, u32, u32)> {
+        // Use local time zone (same as main stats) to ensure consistency
+        let today = chrono::Local::now().date_naive();
+        let today_start = chrono::Local.from_local_datetime(&today.and_hms_opt(0, 0, 0).unwrap()).unwrap().with_timezone(&chrono::Utc);
+        let today_end = chrono::Local.from_local_datetime(&today.and_hms_opt(23, 59, 59).unwrap()).unwrap().with_timezone(&chrono::Utc);
+
+        // This week: Monday of current week to now (same calculation as main stats)
+        let week_start_date = today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64);
+        let week_start = chrono::Local.from_local_datetime(&week_start_date.and_hms_opt(0, 0, 0).unwrap()).unwrap().with_timezone(&chrono::Utc);
+
+        // This month: 1st day of current month to now (same calculation as main stats)
+        let month_start_date = today.with_day(1).unwrap();
+        let month_start = chrono::Local.from_local_datetime(&month_start_date.and_hms_opt(0, 0, 0).unwrap()).unwrap().with_timezone(&chrono::Utc);
+
+        // Fetch all commits for the month period in a single API call for efficiency
+        let month_start_str = month_start.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let today_end_str = today_end.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let commits = self.get_commits_with_dates(full_repo_name, &month_start_str, &today_end_str).await?;
+
+        // Count commits by filtering in memory (more efficient than separate API calls)
+        let mut today_count = 0;
+        let mut week_count = 0;
+        let month_count = commits.len() as u32;
+
+        for commit in &commits {
+            if let Some(commit_date) = commit.get("commit")
+                .and_then(|c| c.get("author"))
+                .and_then(|a| a.get("date"))
+                .and_then(|d| d.as_str())
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            {
+                let commit_date = commit_date.with_timezone(&chrono::Utc);
+
+                if commit_date >= today_start && commit_date <= today_end {
+                    today_count += 1;
+                }
+                if commit_date >= week_start && commit_date <= today_end {
+                    week_count += 1;
+                }
+            }
+        }
+
+        Ok((today_count, week_count, month_count))
+    }
+
+    /// Fetch commits from GitHub API with pagination, filtered by author
+    async fn get_commits_with_dates(&self, full_repo_name: &str, since: &str, until: &str) -> Result<Vec<serde_json::Value>> {
+        let mut all_commits = Vec::new();
+        let mut page = 1;
+        let per_page = 100;
+
+        loop {
+            let url = format!(
+                "https://api.github.com/repos/{}/commits?since={}&until={}&page={}&per_page={}",
+                full_repo_name, since, until, page, per_page
+            );
+
+            match self.client.get(&url).send().await {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        let commits: Vec<serde_json::Value> = response.json().await?;
+                        if commits.is_empty() {
+                            break;
+                        }
+
+                        // Filter commits by GitHub author (not Git author) for accuracy
+                        let user_commits: Vec<serde_json::Value> = commits.into_iter().filter(|commit| {
+                            if let Some(author) = commit.get("author") {
+                                if let Some(login) = author.get("login") {
+                                    return login.as_str() == Some(&self.username);
+                                }
+                            }
+                            false
+                        }).collect();
+
+                        all_commits.extend(user_commits);
+                        page += 1;
+
+                        // Limit pagination to avoid rate limits
+                        if page > 5 {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        Ok(all_commits)
     }
     
-    async fn generate_contribution_graph(&self) -> Result<ContributionGraph> {
-        match self.get_contribution_graph_from_graphql().await {
-            Ok(graph) => Ok(graph),
+    async fn generate_data(&self) -> Result<(ContributionGraph, Vec<RepositoryWithCommits>)> {
+        match self.get_data_from_graphql().await {
+            Ok((graph, repos)) => Ok((graph, repos)),
             Err(_) => {
-                Ok(ContributionGraph {
-                    weeks: Vec::new(),
-                    total_contributions: 0,
-                })
+                Ok((
+                    ContributionGraph {
+                        weeks: Vec::new(),
+                        total_contributions: 0,
+                    },
+                    Vec::new()
+                ))
             }
         }
     }
@@ -268,11 +427,12 @@ impl GitHubClient {
 
     async fn get_stats(&self) -> Result<Stats> {
         let user = self.get_user().await?;
-        let contribution_graph = self.generate_contribution_graph().await?;
+        let (contribution_graph, recent_repos) = self.generate_data().await?;
 
         Ok(Stats {
             username: user.login,
             contribution_graph,
+            recent_repos,
         })
     }
 }
@@ -430,12 +590,60 @@ fn display_contribution_graph(stats: &Stats) {
     print!("{} ", "🟧".bright_yellow());
     print!("{} ", "🟥".bright_red());
     println!("More");
-    
+
+    // Display latest updated repositories with commit counts
+    if !stats.recent_repos.is_empty() {
+        println!();
+        println!("{}", "Latest Updated Repositories:".bright_cyan().bold());
+        println!();
+
+        // Column headers with color coding
+        println!("{:<4} {:<35} {:<8} {:<10} {:<12} {:<15}",
+            "No.".bright_white().bold(),
+            "Repository".bright_white().bold(),
+            "Today".bright_green().bold(),
+            "This Week".bright_cyan().bold(),
+            "This Month".bright_yellow().bold(),
+            "Last Updated".bright_white().bold()
+        );
+
+        // Separator line
+        println!("{}", "─".repeat(85).bright_black());
+
+        for (i, repo) in stats.recent_repos.iter().take(5).enumerate() {
+            // Format the pushed_at time
+            let pushed_display = if let Ok(pushed_time) = chrono::DateTime::parse_from_rfc3339(&repo.pushed_at) {
+                let now = chrono::Utc::now();
+                let duration = now.signed_duration_since(pushed_time);
+
+                if duration.num_days() > 0 {
+                    format!("{} days ago", duration.num_days())
+                } else if duration.num_hours() > 0 {
+                    format!("{} hours ago", duration.num_hours())
+                } else if duration.num_minutes() > 0 {
+                    format!("{} minutes ago", duration.num_minutes())
+                } else {
+                    "just now".to_string()
+                }
+            } else {
+                "unknown".to_string()
+            };
+
+            println!("{:<4} {:<35} {:<8} {:<10} {:<12} {:<15}",
+                format!("{}.", i + 1).bright_white(),
+                repo.full_name.bright_blue().bold(),
+                repo.today_commits.to_string().bright_green(),
+                repo.week_commits.to_string().bright_cyan(),
+                repo.month_commits.to_string().bright_yellow(),
+                pushed_display.bright_black()
+            );
+        }
+    }
 }
 
 
 
-#[tokio::main]
+#[tokio::main] 
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
