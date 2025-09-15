@@ -101,6 +101,8 @@ struct Repository {
     name: String,
     #[serde(rename = "pushedAt")]
     pushed_at: String,
+    #[serde(rename = "isPrivate")]
+    is_private: bool,
     owner: RepositoryOwner,
 }
 
@@ -114,6 +116,7 @@ struct RepositoryWithCommits {
     name: String,
     full_name: String,
     pushed_at: String,
+    is_private: bool,
     today_commits: u32,
     week_commits: u32,
     month_commits: u32,
@@ -233,6 +236,7 @@ impl GitHubClient {
                     nodes {
                         name
                         pushedAt
+                        isPrivate
                         owner {
                             login
                         }
@@ -305,6 +309,7 @@ impl GitHubClient {
                 name: repo.name,
                 full_name: full_name.clone(),
                 pushed_at: repo.pushed_at,
+                is_private: repo.is_private,
                 today_commits,
                 week_commits,
                 month_commits,
@@ -629,9 +634,15 @@ fn display_contribution_graph(stats: &Stats) {
                 "unknown".to_string()
             };
 
+            let repo_name = if repo.is_private {
+                format!("{} ⛨", repo.full_name)
+            } else {
+                repo.full_name.clone()
+            };
+
             println!("{:<4} {:<35} {:<8} {:<10} {:<12} {:<15}",
                 format!("{}.", i + 1).bright_white(),
-                repo.full_name.bright_blue().bold(),
+                repo_name.bright_blue().bold(),
                 repo.today_commits.to_string().bright_green(),
                 repo.week_commits.to_string().bright_cyan(),
                 repo.month_commits.to_string().bright_yellow(),
