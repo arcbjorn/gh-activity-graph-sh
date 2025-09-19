@@ -231,7 +231,8 @@ impl GitHubClient {
                 repositories(
                     first: 5
                     orderBy: {field: PUSHED_AT, direction: DESC}
-                    ownerAffiliations: [OWNER, COLLABORATOR]
+                    affiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER]
+                    ownerAffiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER]
                 ) {
                     nodes {
                         name
